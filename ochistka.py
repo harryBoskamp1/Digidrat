@@ -2,34 +2,37 @@ import pandas as pd
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import numbers
 
-INPUT_FILE = "/content/відомість.csv"
-OUTPUT_FILE = "/content/відомість_результат.xlsx"
-CHECK_FILE = "/content/відомість_переперевірка.xlsx"
+INPUT_FILE = "C:\\Users\\ovechkoa\\Desktop\\python\\відомість.csv"
+OUTPUT_FILE = "C:\\Users\\ovechkoa\\Desktop\\python\\відомість_результат.xlsx"
+CHECK_FILE = "C:\\Users\\ovechkoa\\Desktop\\python\\відомість_переперевірка.xlsx"
 
 # --------------------------------------------------
+# Максимальна кількість рядків у Excel-файлі (.xlsx)
+MAX_EXCEL_ROWS = 1048576
 # 1. Зчитуємо ПЕРШІ 8 РЯДКІВ (заголовок)
 # --------------------------------------------------
-header_part = pd.read_csv(
-    INPUT_FILE,
-    sep=';',
-    engine="python",
-    encoding='cp1251',
-    header=None,
-    nrows=8
-)
+with open(INPUT_FILE, encoding="cp1251", errors="ignore") as f:
+    header_lines = [next(f).rstrip("\n") for _ in range(8)]
+
+header_part = pd.DataFrame(header_lines)
+
 
 # --------------------------------------------------
 # 2. Зчитуємо ОСНОВНІ ДАНІ з 9-го рядка
 # --------------------------------------------------
+import csv
+
 df = pd.read_csv(
     INPUT_FILE,
     sep=';',
-    engine="python",
     encoding='cp1251',
     skiprows=8,
-    header=0,
+    engine='python',
+    on_bad_lines='warn',
     dtype=str
 )
+
+
 
 df.columns = df.columns.str.strip()
 df = df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
@@ -49,10 +52,10 @@ for col in date_columns:
         dayfirst=True
     )
 
-# Числовые колонки
-for col in df.columns:
-    if col not in ["Ознака виду заборгованості"] and col not in date_columns:
-        df[col] = pd.to_numeric(df[col], errors="ignore")
+
+
+
+
 
 
 
@@ -88,14 +91,13 @@ mask_1 = (
 df = df.loc[~mask_1]
 
 # 7001, 7003 + кредитна заборгованість
-mask_2 = (
-    df["Система"].isin([7001, 7003]) &
-    df["Ознака виду заборгованості"]
-    .str.lower()
-    .str.contains("кредитна заборгованість", na=False)
-)
-df = df.loc[~mask_2]
-
+#mask_2 = (
+#    df["Система"].isin([7001, 7003]) &
+#    df["Ознака виду заборгованості"]
+#    .str.lower()
+#    .str.contains("кредитна заборгованість", na=False)
+#)
+#df = df.loc[~mask_2]
 # --------------------------------------------------
 # 7. ПЕРЕВІРКА
 # --------------------------------------------------
@@ -125,51 +127,32 @@ df = df[
 # --------------------------------------------------
 # 9. Запис ОСНОВНОГО ФАЙЛУ з розбиттям
 # --------------------------------------------------
-MAX_EXCEL_ROWS = 1_048_576
-SPLIT_LIMIT = 1_000_000
-
 with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
 
-    # повертаємо заголовок (рядки 1–8)
-    header_part.to_excel(
+    ws = writer.book.active
+    ws.title = "відомість"
+
+    # запис шапки (строки 1–8, колонка A)
+    for i, line in enumerate(header_lines):
+        ws.cell(row=i + 1, column=1).value = line
+
+    # запись таблицы: заголовки в строке 9, данные с 10
+    df.to_excel(
         writer,
-        sheet_name="Аркуш1",
+        sheet_name="відомість",
         index=False,
-        header=False,
-        startrow=0
+        startrow=8
     )
-
-    start_row = len(header_part)
-
-    if len(df) <= MAX_EXCEL_ROWS:
-        df.to_excel(
-            writer,
-            sheet_name="Аркуш1",
-            index=False,
-            startrow=start_row
-        )
-    else:
-        df.iloc[:SPLIT_LIMIT].to_excel(
-            writer,
-            sheet_name="Аркуш1",
-            index=False,
-            startrow=start_row
-        )
-        df.iloc[SPLIT_LIMIT:].to_excel(
-            writer,
-            sheet_name="Аркуш2",
-            index=False
-        )
 
     # --- ПРАВИЛЬНОЕ ФОРМАТИРОВАНИЕ EXCEL ---
     workbook = writer.book
-    ws = workbook["Аркуш1"] # Get the worksheet object
+    ws = workbook["відомість"] # Get the worksheet object
 
     for idx, col in enumerate(df.columns, start=1):
         # ДАТЫ (по названию колонки)
         if "дата" in col.lower():
             for row_of_cells in ws.iter_rows(
-                min_row=start_row + 2,
+                min_row=10,
                 min_col=idx,
                 max_col=idx
             ):
@@ -177,16 +160,6 @@ with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
                     if cell.value is not None:
                         cell.number_format = 'dd.mm.yyyy' # Corrected format string
 
-        # ЧИСЛА
-        elif pd.api.types.is_numeric_dtype(df[col]):
-            for row_of_cells in ws.iter_rows(
-                min_row=start_row + 2,
-                min_col=idx,
-                max_col=idx
-            ):
-                for cell in row_of_cells:
-                    if cell.value is not None:
-                        cell.number_format = "#,##0.00"
 
     # Handle the second sheet if it exists
     if len(df) > MAX_EXCEL_ROWS:
@@ -212,13 +185,8 @@ with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
                             cell.number_format = numbers.FORMAT_NUMBER
 
 
-# --------------------------------------------------
-# 10. Запис ФАЙЛУ ПЕРЕПЕРЕВІРКИ
-# --------------------------------------------------
-with pd.ExcelWriter(CHECK_FILE, engine="openpyxl") as writer:
-    for name, data in checks.items():
-        if not data.empty:
-            data.to_excel(writer, sheet_name=name, index=False)
+
+
 
 print("✅ Готово")
 print("📄 Основний файл:", OUTPUT_FILE)
