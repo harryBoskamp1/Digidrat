@@ -2,9 +2,9 @@ import pandas as pd
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import numbers
 
-INPUT_FILE = "C:\\Users\\Kankerwindows\\Documents\\GitHub\\Digidrat\\відомість.csv"
-OUTPUT_FILE = "C:\\Users\\Kankerwindows\\Documents\\GitHub\\Digidrat\\відомість_результат.xlsx"
-CHECK_FILE = "C:\\Users\\Kankerwindows\\Documents\\GitHub\\Digidrat\\відомість_переперевірка.xlsx"
+INPUT_FILE = "c:\\Users\\harry.boskamp\\OneDrive - Robidus Groep BV\\Digidrat\\відомість.csv"
+OUTPUT_FILE = "c:\\Users\\harry.boskamp\\OneDrive - Robidus Groep BV\\Digidrat\\відомість_результат.xlsx"
+CHECK_FILE = "c:\\Users\\harry.boskamp\\OneDrive - Robidus Groep BV\\Digidrat\\відомість_переперевірка.xlsx"
 
 # --------------------------------------------------
 # Максимальна кількість рядків у Excel-файлі (.xlsx)
@@ -12,9 +12,7 @@ MAX_EXCEL_ROWS = 1048576
 # 1. Зчитуємо ПЕРШІ 8 РЯДКІВ (заголовок)
 # --------------------------------------------------
 with open(INPUT_FILE, encoding="cp1251", errors="ignore") as f:
-    header_lines = [next(f).rstrip("\n") for _ in range(8)]
-
-header_part = pd.DataFrame(header_lines)
+    header_lines = [next(f).rstrip("\n").split(";") for _ in range(8)]
 
 
 # --------------------------------------------------
@@ -32,6 +30,9 @@ df = pd.read_csv(
     dtype=str
 )
 
+# Видалення рядка з номерами колонок (перший рядок даних)
+df = df.iloc[1:].reset_index(drop=True)
+
 
 
 df.columns = df.columns.str.strip()
@@ -40,18 +41,29 @@ df = df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
 
 # --- ПРАВИЛЬНОЕ ПРЕОБРАЗОВАНИЕ ЧИСЕЛ И ДАТ ---
 
-# Система → число
-df["Система"] = pd.to_numeric(df["Система"], errors="coerce")
-
 # Дати
 date_columns = [col for col in df.columns if "дата" in col.lower()]
 for col in date_columns:
     df[col] = pd.to_datetime(
         df[col],
         errors="coerce",
-        dayfirst=True
+        format="%d.%m.%Y"
     )
 
+# Система → число
+df["Система"] = pd.to_numeric(df["Система"], errors="coerce")
+
+# Конвертація числових колонок (десятковий роздільник — кома)
+non_date_cols = [c for c in df.columns if c not in date_columns]
+for col in non_date_cols:
+    if col == "Система":
+        continue
+    converted = df[col].str.replace(",", ".", regex=False)
+    converted = pd.to_numeric(converted, errors="coerce")
+    # Якщо хоча б 50% значень успішно конвертувались — стовпець числовий
+    if converted.notna().sum() > df[col].notna().sum() * 0.5:
+        df[col] = converted
+
 
 
 
@@ -60,9 +72,10 @@ for col in date_columns:
 
 
 # --------------------------------------------------
-# 4. Заповнення пустих значень у "Система"
+# 4. Заповнення пустих значень у "Система" та "Ідентифікаційний код/номер (ЄДРПОУ)"
 # --------------------------------------------------
 df["Система"] = df["Система"].ffill()
+df["Ідентифікаційний код/номер (ЕДРПОУ)"] = df["Ідентифікаційний код/номер (ЕДРПОУ)"].ffill()
 
 # --------------------------------------------------
 # 5. Дебіторська заборгованість → ВИДАЛЯЄМО РЯДОК
@@ -140,9 +153,11 @@ with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
     workbook = writer.book
     ws = workbook["відомість"]
     
-    # запис шапки (строки 1–8, колонка A)
-    for i, line in enumerate(header_lines):
-        ws.cell(row=i + 1, column=1).value = line
+    # запис шапки (строки 1–8, розбиття по комірках)
+    for i, parts in enumerate(header_lines):
+        for j, val in enumerate(parts):
+            if val:  # пропускаємо порожні комірки
+                ws.cell(row=i + 1, column=j + 1).value = val
 
     # --- ПРАВИЛЬНОЕ ФОРМАТИРОВАНИЕ EXCEL ---
     for idx, col in enumerate(df.columns, start=1):
