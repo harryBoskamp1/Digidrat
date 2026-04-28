@@ -1,25 +1,30 @@
+print("Starting script...")
+import time
+start_time = time.time()
+
 import pandas as pd
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import numbers
 
 INPUT_FILE = "c:\\Users\\harry.boskamp\\OneDrive - Robidus Groep BV\\Digidrat\\відомість.csv"
 OUTPUT_FILE = "c:\\Users\\harry.boskamp\\OneDrive - Robidus Groep BV\\Digidrat\\відомість_результат.xlsx"
-CHECK_FILE = "c:\\Users\\harry.boskamp\\OneDrive - Robidus Groep BV\\Digidrat\\відомість_переперевірка.xlsx"
 
 # --------------------------------------------------
 # Максимальна кількість рядків у Excel-файлі (.xlsx)
 MAX_EXCEL_ROWS = 1048576
 # 1. Зчитуємо ПЕРШІ 8 РЯДКІВ (заголовок)
 # --------------------------------------------------
+print("📖 Reading header (rows 1-8)...")
 with open(INPUT_FILE, encoding="cp1251", errors="ignore") as f:
     header_lines = [next(f).rstrip("\n").split(";") for _ in range(8)]
-
+print("✅ Header read successfully")
 
 # --------------------------------------------------
 # 2. Зчитуємо ОСНОВНІ ДАНІ з 9-го рядка
 # --------------------------------------------------
 import csv
 
+print("📖 Reading main data...")
 df = pd.read_csv(
     INPUT_FILE,
     sep=';',
@@ -29,6 +34,8 @@ df = pd.read_csv(
     on_bad_lines='warn',
     dtype=str
 )
+
+print(f"✅ Data read: {len(df)} rows, {len(df.columns)} columns")
 
 # Видалення рядка з номерами колонок (перший рядок даних)
 df = df.iloc[1:].reset_index(drop=True)
@@ -40,6 +47,7 @@ df = df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
 
 
 # --- ПРАВИЛЬНОЕ ПРЕОБРАЗОВАНИЕ ЧИСЕЛ И ДАТ ---
+print("🔄 Converting dates and numbers...")
 
 # Дати
 date_columns = [col for col in df.columns if "дата" in col.lower()]
@@ -71,15 +79,19 @@ for col in non_date_cols:
 
 
 
+print("✅ Data transformations complete")
+
 # --------------------------------------------------
 # 4. Заповнення пустих значень у "Система" та "Ідентифікаційний код/номер (ЄДРПОУ)"
 # --------------------------------------------------
+print("🔄 Filling empty values...")
 df["Система"] = df["Система"].ffill()
 df["Ідентифікаційний код/номер (ЕДРПОУ)"] = df["Ідентифікаційний код/номер (ЕДРПОУ)"].ffill()
 
 # --------------------------------------------------
 # 5. Дебіторська заборгованість → ВИДАЛЯЄМО РЯДОК
 # --------------------------------------------------
+print("🗑️ Removing дебіторська заборгованість...")
 mask_debit = (
     df["Ознака виду заборгованості"]
     .str.lower()
@@ -87,9 +99,12 @@ mask_debit = (
 )
 df = df.loc[~mask_debit]
 
+print(f"✅ Removed debit rows. Rows remaining: {len(df)}")
+
 # --------------------------------------------------
 # 6. Видалення по системам
 # --------------------------------------------------
+print("🗑️ Removing by systems...")
 
 # 2000, 5000, 6000, 7101 + зобов'язання
 mask_1 = (
@@ -104,13 +119,15 @@ mask_1 = (
 df = df.loc[~mask_1]
 
 # 7001, 7003 + кредитна заборгованість
-#mask_2 = (
-#    df["Система"].isin([7001, 7003]) &
-#    df["Ознака виду заборгованості"]
-#    .str.lower()
-#    .str.contains("кредитна заборгованість", na=False)
-#)
-#df = df.loc[~mask_2]
+mask_2 = (
+    df["Система"].isin([7001, 7003]) &
+    df["Ознака виду заборгованості"]
+    .str.lower()
+    .str.contains("кредитна заборгованість", na=False)
+)
+df = df.loc[~mask_2]
+print(f"✅ System filtering complete. Rows remaining: {len(df)}")
+
 # --------------------------------------------------
 # 7. ПЕРЕВІРКА
 # --------------------------------------------------
@@ -128,6 +145,7 @@ checks = {
 # --------------------------------------------------
 # 8. Видалення рядка "ИТОГО"
 # --------------------------------------------------
+print("🗑️ Removing ИТОГО rows...")
 df = df[
     ~df.apply(
         lambda r: r.astype(str)
@@ -137,9 +155,12 @@ df = df[
     )
 ]
 
+print(f"📊 Final dataset: {len(df)} rows")
+
 # --------------------------------------------------
 # 9. Запис ОСНОВНОГО ФАЙЛУ з розбиттям
 # --------------------------------------------------
+print("📝 Writing Excel output...")
 with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
     # запись таблицы: заголовки в строке 9, данные с 10
     df.to_excel(
@@ -199,6 +220,7 @@ with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
 
 
 
+end_time = time.time()
+print(f"⏱️ Execution time: {end_time - start_time:.2f} seconds")
 print("✅ Готово")
 print("📄 Основний файл:", OUTPUT_FILE)
-print("🔍 Файл переперевірки:", CHECK_FILE)
