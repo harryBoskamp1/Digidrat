@@ -1,0 +1,222 @@
+print("Starting script")
+import logging
+logging.basicConfig(filename='debug.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.info("Starting script")
+
+import time
+start_time = time.time()
+
+import pandas as pd
+import warnings
+warnings.filterwarnings("ignore", message="Could not infer format")
+import os
+
+INPUT_FILE = os.path.join(os.path.dirname(__file__), "відомість.csv")
+OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "відомість_результат.xlsx")
+CHECK_FILE = os.path.join(os.path.dirname(__file__), "відомість_переперевірка.xlsx")
+
+# --------------------------------------------------
+# Максимальна кількість рядків у Excel-файлі (.xlsx)
+MAX_EXCEL_ROWS = 1048576
+max_data_rows = MAX_EXCEL_ROWS - 8
+# 1. Зчитуємо ПЕРШІ 8 РЯДКІВ (заголовок)
+# --------------------------------------------------
+try:
+    with open(INPUT_FILE, encoding="cp1251", errors="ignore") as f:
+        header_lines = [next(f).rstrip("\n") for _ in range(8)]
+    print("Header read successfully")
+except Exception as e:
+    print(f"Error reading header: {e}")
+    exit(1)
+
+
+# --------------------------------------------------
+# 2. Зчитуємо ОСНОВНІ ДАНІ з 9-го рядка
+# --------------------------------------------------
+
+print("Reading main data...")
+try:
+    df = pd.read_csv(
+        INPUT_FILE,
+        sep=';',
+        encoding='cp1251',
+        skiprows=8,
+        engine='python',
+        on_bad_lines='warn',
+        dtype=str
+    )
+    print("Data read successfully")
+    print(df.head())  # Debug statement to check the contents of the DataFrame
+except Exception as e:
+    print(f"Error reading data: {e}")
+    exit(1)
+
+
+
+df.columns = df.columns.str.strip()
+df = df.apply(lambda x: x.str.strip())
+
+
+# --- ПРАВИЛЬНОЕ ПРЕОБРАЗОВАНИЕ ЧИСЕЛ И ДАТ ---
+
+print("Processing data transformations...")
+# Система → число
+df["Система"] = pd.to_numeric(df["Система"], errors="coerce")
+
+def parse_dates_vectorized(series):
+    # Try parsing with the expected format first
+    parsed = pd.to_datetime(series, format='%d.%m.%Y', errors='coerce')
+    # For any unparsed, try dayfirst
+    mask = parsed.isna()
+    if mask.any():
+        parsed[mask] = pd.to_datetime(series[mask], dayfirst=True, errors='coerce')
+    # Format all parsed dates as dd.mm.yyyy, keep NaT as empty string
+    return parsed.dt.strftime('%d.%m.%Y').fillna('')
+
+# Дати
+date_columns = [col for col in df.columns if "дата" in col.lower()]
+for col in date_columns:
+    df[col] = parse_dates_vectorized(df[col])
+
+# Перетворення числових стовпців (крім дат, "Система" та "Ознака виду заборгованості")
+numeric_columns = [
+    col for col in df.columns
+    if col not in date_columns and col not in ["Система", "Ознака виду заборгованості"]
+]
+for col in numeric_columns:
+    # Normalize number formatting: remove spaces (thousands separators) and
+    # convert comma decimal separators to dots, but only for non-null cells.
+    mask = df[col].notna()
+    if mask.any():
+        df.loc[mask, col] = (
+            df.loc[mask, col]
+            .astype(str)
+            .str.replace(r"\\s+", "", regex=True)
+            .str.replace(",", ".", regex=False)
+            .replace("", pd.NA)
+        )
+    df[col] = pd.to_numeric(df[col], errors='coerce')
+
+# --------------------------------------------------
+# 4. Заповнення пустих значень у "Система"
+# --------------------------------------------------
+df["Система"] = df["Система"].ffill()
+
+# --------------------------------------------------
+# 5. Дебіторська заборгованість → ВИДАЛЯЄМО РЯДОК
+# --------------------------------------------------
+mask_debit = (
+    df["Ознака виду заборгованості"]
+    .fillna("")
+    .str.lower()
+    .str.contains("дебіторська заборгованість", na=False)
+)
+df = df.loc[~mask_debit]
+
+# --------------------------------------------------
+# 6. Видалення по системам
+# --------------------------------------------------
+
+# 2000, 5000, 6000, 7101 + зобов'язання
+mask_1 = (
+    df["Система"].isin([2000, 5000, 6000, 7101]) &
+    (
+        df["Ознака виду заборгованості"].isna() |
+        df["Ознака виду заборгованості"]
+        .fillna("")
+        .str.lower()
+        .str.contains("зобов'язання", na=False)
+    )
+)
+df = df.loc[~mask_1]
+
+# 7001, 7003 + кредитна заборгованість
+mask_2 = (
+    df["Система"].isin([7001, 7003]) &
+    df["Ознака виду заборгованості"]
+    .fillna("")
+    .str.lower()
+    .str.contains("кредитна заборгованість", na=False)
+)
+df = df.loc[~mask_2]
+# --------------------------------------------------
+
+# --------------------------------------------------
+# 9. Видалення рядка "ИТОГО"
+# --------------------------------------------------
+df = df[
+    ~df.apply(
+        lambda r: r.astype(str)
+        .str.contains("ИТОГО", case=False)
+        .any(),
+        axis=1
+    )
+]
+
+# --------------------------------------------------
+# 9. Запис ОСНОВНОГО ФАЙЛУ з розбиттям
+# --------------------------------------------------
+print("Writing main output file...")
+with pd.ExcelWriter(OUTPUT_FILE, engine="xlsxwriter") as writer:
+    if len(df) <= max_data_rows:
+        df.to_excel(
+            writer,
+            sheet_name="відомість",
+            index=False,
+            startrow=8
+        )
+        workbook = writer.book
+        worksheet = writer.sheets["відомість"]
+        # write header
+        for i, line in enumerate(header_lines):
+            worksheet.write(i, 0, line)
+        # format
+        date_format = workbook.add_format({'num_format': 'dd.mm.yyyy'})
+        # allow decimals up to 10 places; '#' prevents trailing separator on integers
+        number_format = workbook.add_format({'num_format': '#.##########'})
+        for idx, col in enumerate(df.columns, start=1):
+            if "дата" in col.lower():
+                worksheet.set_column(idx-1, idx-1, None, date_format)
+            elif pd.api.types.is_numeric_dtype(df[col]):
+                worksheet.set_column(idx-1, idx-1, None, number_format)
+    else:
+        df1 = df.iloc[:max_data_rows]
+        df2 = df.iloc[max_data_rows:]
+        df1.to_excel(
+            writer,
+            sheet_name="відомість",
+            index=False,
+            startrow=8
+        )
+        workbook = writer.book
+        worksheet = writer.sheets["відомість"]
+        # write header
+        for i, line in enumerate(header_lines):
+            worksheet.write(i, 0, line)
+        # format
+        date_format = workbook.add_format({'num_format': 'dd.mm.yyyy'})
+        # allow decimals up to 10 places; '#' prevents trailing separator on integers
+        number_format = workbook.add_format({'num_format': '#.##########'})
+        for idx, col in enumerate(df.columns, start=1):
+            if "дата" in col.lower():
+                worksheet.set_column(idx-1, idx-1, None, date_format)
+            elif pd.api.types.is_numeric_dtype(df[col]):
+                worksheet.set_column(idx-1, idx-1, None, number_format)
+        # second sheet
+        worksheet2 = workbook.add_worksheet("Аркуш2")
+        df2.to_excel(worksheet2, index=False, startrow=0)
+        # format
+        for idx, col in enumerate(df.columns, start=1):
+            if "дата" in col.lower():
+                worksheet2.set_column(idx-1, idx-1, None, date_format)
+            elif pd.api.types.is_numeric_dtype(df[col]):
+                worksheet2.set_column(idx-1, idx-1, None, number_format)
+
+
+
+
+
+end_time = time.time()
+print(f"Время выполнения: {end_time - start_time:.2f} секунд")
+print("✅ Готово")
+print("📄 Основний файл:", OUTPUT_FILE)
